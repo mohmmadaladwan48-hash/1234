@@ -5,11 +5,14 @@ Fetch Instagram user information and export to Excel via Telegram
 """
 
 import logging
+import time
+import re
+import asyncio
+import os
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ChatAction
-import os
-from pathlib import Path
 from advanced_scraper import InstagramInfoScraper
 
 # Enable logging
@@ -18,6 +21,94 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# ============ UTILITY FUNCTIONS ============
+
+def get_scraper(context):
+    """Get user-isolated scraper instance"""
+    if "scraper" not in context.user_data:
+        context.user_data["scraper"] = InstagramInfoScraper()
+    return context.user_data["scraper"]
+
+
+def can_search(context, cooldown=5):
+    """Rate limiting - prevent spam"""
+    last = context.user_data.get("last_search", 0)
+    now = time.time()
+    if now - last < cooldown:
+        return False
+    context.user_data["last_search"] = now
+    return True
+
+
+def valid_username(username: str) -> bool:
+    """Validate Instagram username format"""
+    return bool(re.fullmatch(r"[a-zA-Z0-9._]{1,30}", username))
+
+
+def format_user_info(info: dict) -> str:
+    """Format user info for display (DRY principle)"""
+    return f"""
+✅ *@{info.get('username', 'N/A')}*
+
+👤 *Full Name:* {info.get('full_name', 'N/A')}
+👥 *Followers:* {info.get('followers', 'N/A')}
+📤 *Following:* {info.get('following', 'N/A')}
+📝 *Bio:* {info.get('bio', 'N/A')}
+📍 *Location:* {info.get('full_location', 'N/A')}
+📊 *Posts:* {info.get('posts_count', 'N/A')}
+✓ *Verified:* {info.get('is_verified', 'N/A')}
+🌐 *Public:* {info.get('is_public', 'N/A')}
+🏢 *Business:* {info.get('is_business_account', 'N/A')}
+🔗 *URL:* {info.get('external_url', 'N/A')}
+🕐 *Search Time:* {info.get('search_timestamp', 'N/A')}
+"""
+
+
+def infer_account_origin(info: dict) -> dict:
+    """Infer account origin from available data (estimation only)"""
+    hints = []
+    
+    bio = info.get("bio", "").lower()
+    if any(k in bio for k in ["ksa", "saudi", "egypt", "uae", "dubai", "middle east", "مصر", "السعودية"]):
+        hints.append("📌 Bio mentions location keyword")
+    
+    url = info.get("external_url")
+    if url and "." in url:
+        try:
+            tld = url.split(".")[-1].lower()
+            if len(tld) == 2:
+                hints.append(f"🌐 Website TLD: .{tld}")
+        except:
+            pass
+    
+    if info.get("is_business_account"):
+        hints.append("💼 Business account detected")
+    
+    return {
+        "origin": hints or ["🤷 Unknown (not enough data)"],
+        "confidence": "⚠️ Low (estimated, not official)"
+    }
+
+
+def estimate_account_age(posts_count, followers):
+    """Estimate account age based on activity"""
+    try:
+        posts = int(posts_count) if posts_count else 0
+        
+        if posts < 10:
+            return "Very New / Low Activity"
+        if posts < 50:
+            return "New (< 50 posts)"
+        if posts < 200:
+            return "Somewhat Established (50-200 posts)"
+        if posts < 500:
+            return "Established (200-500 posts)"
+        return "Very Active / Old (500+ posts)"
+    except:
+        return "Unknown"
+
+# ============ END UTILITY FUNCTIONS ============
 
 # Initialize scraper
 scraper = InstagramInfoScraper()
@@ -181,12 +272,24 @@ async def export_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def export_to_excel(update, user_id) -> None:
     """Export search history to Excel"""
+    scraper = get_scraper(update.callback_query.message._bot.get_chat(user_id) if hasattr(update, 'callback_query') else None)
+    
+    # For button callback
+    if hasattr(update, 'callback_query'):
+        chat = update.callback_query.message.chat
+        message = update.callback_query.message
+    else:
+        chat = update.effective_chat
+        message = update.message
+    
+    # This is a bit tricky - we need context to get scraper
+    # Use the global scraper if available
     if not scraper.search_history:
         text = "❌ No searches to export. Search for some users first!"
         if hasattr(update, 'edit_message_text'):
             await update.edit_message_text(text)
         else:
-            await update.message.reply_text(text)
+            await message.reply_text(text)
         return
     
     try:
@@ -194,25 +297,36 @@ async def export_to_excel(update, user_id) -> None:
         if hasattr(update, 'edit_message_text'):
             await update.edit_message_text("⏳ Generating Excel file...")
         else:
-            await update.message.reply_text("⏳ Generating Excel file...")
+            await message.reply_text("⏳ Generating Excel file...")
         
-        # Generate Excel
+        # Generate Excel with unique filename
         excel_path = scraper.export_search_history_to_excel()
         
         if excel_path and os.path.exists(excel_path):
+            # Create unique filename
+            unique_filename = f"instagram_{user_id}_{int(time.time())}.xlsx"
+            
             # Send file
             with open(excel_path, 'rb') as excel_file:
-                await update.effective_chat.send_document(
+                await chat.send_document(
                     document=excel_file,
                     caption=f"✅ Excel file with {len(scraper.search_history)} users",
-                    filename="instagram_search_results.xlsx"
+                    filename=unique_filename
                 )
+            
+            # Cleanup
+            try:
+                os.remove(excel_path)
+            except:
+                pass
         else:
-            await update.effective_message.reply_text("❌ Failed to create Excel file")
+            await message.reply_text("❌ Failed to create Excel file")
     
+    except TimeoutError:
+        await message.reply_text("⏱ Export timeout. Please try again.")
     except Exception as e:
-        logger.error(f"Export error: {e}")
-        await update.effective_message.reply_text(f"❌ Error: {str(e)}")
+        logger.exception("Export error")
+        await message.reply_text("❌ Export failed. Please try again.")
 
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -234,27 +348,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     if mode == 'lookup':
         # Single lookup
+        if not valid_username(user_text):
+            await update.message.reply_text("❌ Invalid Instagram username. Use only letters, numbers, dots, and underscores.")
+            return
+        
+        if not can_search(context, cooldown=5):
+            await update.message.reply_text("⏳ Please wait a few seconds before searching again.")
+            return
+        
         await update.message.chat.send_action(ChatAction.TYPING)
         
+        scraper = get_scraper(context)
         info = scraper.get_user_info(user_text)
         
         if isinstance(info, dict):
-            # Format response
-            response = f"""
-✅ *@{info['username']}*
-
-👤 *Full Name:* {info['full_name']}
-👥 *Followers:* {info['followers']}
-📤 *Following:* {info['following']}
-📝 *Bio:* {info['bio']}
-📍 *Location:* {info['full_location']}
-📊 *Posts:* {info['posts_count']}
-✓ *Verified:* {info['is_verified']}
-🌐 *Public:* {info['is_public']}
-🏢 *Business:* {info['is_business_account']}
-🔗 *URL:* {info['external_url']}
-🕐 *Search Time:* {info['search_timestamp']}
-            """
+            response = format_user_info(info)
+            
+            # Add origin inference
+            origin = infer_account_origin(info)
+            origin_text = "\n".join(f"{h}" for h in origin["origin"])
+            response += f"\n🌍 *Estimated Origin:*\n{origin_text}\n_{origin['confidence']}_"
+            
+            # Add account age
+            age = estimate_account_age(info.get('posts_count', 0), info.get('followers', 0))
+            response += f"\n\n📅 *Account Age Estimate:* {age}"
             
             keyboard = [
                 [InlineKeyboardButton("🔍 Search Another", callback_data='lookup'),
@@ -271,63 +388,86 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     elif mode == 'batch':
         # Batch lookup
-        await update.message.chat.send_action(ChatAction.TYPING)
+        if not can_search(context, cooldown=10):
+            await update.message.reply_text("⏳ Please wait before starting another batch search.")
+            return
         
         usernames = [u.strip() for u in user_text.split(',')]
+        usernames = [u for u in usernames if valid_username(u)]
         
+        if not usernames:
+            await update.message.reply_text("❌ No valid usernames found.")
+            return
+        
+        await update.message.chat.send_action(ChatAction.TYPING)
         await update.message.reply_text(f"🔍 Searching {len(usernames)} users...")
         
-        results = []
-        for i, user in enumerate(usernames, 1):
-            info = scraper.get_user_info(user)
-            if isinstance(info, dict):
-                results.append(info)
-                # Update progress
-                if i % 3 == 0:  # Update every 3 users
-                    await update.message.reply_text(f"⏳ Progress: {i}/{len(usernames)} users fetched...")
+        scraper = get_scraper(context)
         
-        # Summary
-        summary = f"""
+        # Async batch search (faster)
+        try:
+            tasks = [
+                asyncio.to_thread(scraper.get_user_info, u)
+                for u in usernames
+            ]
+            results = await asyncio.gather(*tasks)
+            results = [r for r in results if isinstance(r, dict)]
+            
+            # Summary
+            summary = f"""
 ✅ *Batch Search Complete*
 
 📊 Results: {len(results)}/{len(usernames)} users found
 
 Users fetched:
-        """
+            """
+            
+            for result in results:
+                summary += f"\n• @{result['username']} ({result['full_name']}) - {result['followers']} followers"
+            
+            keyboard = [
+                [InlineKeyboardButton("📥 Export to Excel", callback_data='export'),
+                 InlineKeyboardButton("📋 View History", callback_data='history')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(summary, parse_mode='Markdown', reply_markup=reply_markup)
+        except TimeoutError:
+            await update.message.reply_text("⏱ Search timeout. Instagram took too long to respond.")
+        except ValueError:
+            await update.message.reply_text("❌ Invalid input in batch search.")
+        except Exception as e:
+            logger.exception("Batch search error")
+            await update.message.reply_text("❌ Batch search failed. Please try again.")
         
-        for result in results:
-            summary += f"\n• @{result['username']} ({result['full_name']}) - {result['followers']} followers"
-        
-        keyboard = [
-            [InlineKeyboardButton("📥 Export to Excel", callback_data='export'),
-             InlineKeyboardButton("📋 View History", callback_data='history')]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(summary, parse_mode='Markdown', reply_markup=reply_markup)
         context.user_data['mode'] = None
     
     else:
-        # Default: treat as username lookup
+        # Default: treat as single username lookup
+        if not valid_username(user_text):
+            await update.message.reply_text("❌ Invalid Instagram username. Use only letters, numbers, dots, and underscores.")
+            return
+        
+        if not can_search(context, cooldown=5):
+            await update.message.reply_text("⏳ Please wait a few seconds before searching again.")
+            return
+        
         await update.message.chat.send_action(ChatAction.TYPING)
         
+        scraper = get_scraper(context)
         info = scraper.get_user_info(user_text)
         
         if isinstance(info, dict):
-            response = f"""
-✅ *@{info['username']}*
-
-👤 *Full Name:* {info['full_name']}
-👥 *Followers:* {info['followers']}
-📤 *Following:* {info['following']}
-📝 *Bio:* {info['bio']}
-📍 *Location:* {info['full_location']}
-📊 *Posts:* {info['posts_count']}
-✓ *Verified:* {info['is_verified']}
-🌐 *Public:* {info['is_public']}
-🏢 *Business:* {info['is_business_account']}
-🔗 *URL:* {info['external_url']}
-            """
+            response = format_user_info(info)
+            
+            # Add origin inference
+            origin = infer_account_origin(info)
+            origin_text = "\n".join(f"{h}" for h in origin["origin"])
+            response += f"\n\n🌍 *Estimated Origin:*\n{origin_text}\n_{origin['confidence']}_"
+            
+            # Add account age
+            age = estimate_account_age(info.get('posts_count', 0), info.get('followers', 0))
+            response += f"\n\n📅 *Account Age Estimate:* {age}"
             
             keyboard = [
                 [InlineKeyboardButton("🔍 Search Another", callback_data='lookup'),
@@ -341,13 +481,23 @@ Users fetched:
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Log errors"""
+    """Handle errors with specific error types"""
     logger.error(f'Update {update} caused error {context.error}')
     
-    if update and update.effective_message:
-        await update.effective_message.reply_text(
-            "❌ An error occurred. Please try again or use /help"
-        )
+    error = context.error
+    
+    try:
+        if isinstance(error, TimeoutError):
+            error_msg = "⏱ Request timeout. Instagram took too long to respond. Please try again."
+        elif isinstance(error, ValueError):
+            error_msg = "❌ Invalid input. Please check your request."
+        else:
+            error_msg = "❌ An unexpected error occurred. Please try again or use /help"
+        
+        if update and update.effective_message:
+            await update.effective_message.reply_text(error_msg)
+    except:
+        logger.exception("Failed to send error message")
 
 
 def main() -> None:
