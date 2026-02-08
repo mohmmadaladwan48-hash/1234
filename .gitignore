@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Instagram Scraper specific
+output/
+sessions/
+.env
+search_history.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+~$*.xlsx
+*.tmp
