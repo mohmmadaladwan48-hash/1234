@@ -353,7 +353,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 def main() -> None:
     """Start the bot."""
     # Create the Application
-    application = Application.builder().token("8326472243:AAE-umWaL_3V6Tl6MBcNMifxGwQgfgTHFz4").build()
+    application = Application.builder().token(os.getenv("TELEGRAM_TOKEN")).build()
 
     # Add command handlers
     application.add_handler(CommandHandler("start", start))
@@ -383,3 +383,4 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
