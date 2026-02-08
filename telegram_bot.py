@@ -14,6 +14,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ChatAction
 from advanced_scraper import InstagramInfoScraper
+from tiktok_scraper import TikTokScraper
 
 # Enable logging
 logging.basicConfig(
@@ -122,26 +123,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_sessions[user_id] = {'searches': []}
     
     welcome_text = """
-🎉 *Welcome to Instagram Scraper Bot!* 🎉
+🎉 *Welcome to Social Media Scraper Bot!* 🎉
 
-I can help you fetch Instagram user information and export data to Excel.
+I can help you fetch user information from Instagram and TikTok, then export data to Excel.
 
-📋 *Available Commands:*
-• /lookup - Search for a single user
-• /batch - Search multiple users at once
-• /history - View your search history
-• /export - Export search history to Excel
-• /clear - Clear your search history
-• /help - Show help menu
-
-🚀 Let's get started!
+📋 *Choose your platform:*
     """
     
     keyboard = [
-        [InlineKeyboardButton("🔍 Lookup User", callback_data='lookup'),
-         InlineKeyboardButton("📊 Batch Search", callback_data='batch')],
-        [InlineKeyboardButton("📋 View History", callback_data='history'),
-         InlineKeyboardButton("📥 Export Excel", callback_data='export')]
+        [InlineKeyboardButton("📸 Instagram", callback_data='platform_instagram'),
+         InlineKeyboardButton("🎵 TikTok", callback_data='platform_tiktok')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -191,15 +182,50 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if user_id not in user_sessions:
         user_sessions[user_id] = {'searches': []}
     
-    if query.data == 'lookup':
+    # Platform selection
+    if query.data == 'platform_instagram':
+        await query.answer()
+        context.user_data['platform'] = 'instagram'
+        keyboard = [
+            [InlineKeyboardButton("🔍 Lookup User", callback_data='lookup'),
+             InlineKeyboardButton("📊 Batch Search", callback_data='batch')],
+            [InlineKeyboardButton("📋 View History", callback_data='history'),
+             InlineKeyboardButton("📥 Export Excel", callback_data='export')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "📸 *Instagram Mode Selected*\n\nChoose an action:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    
+    elif query.data == 'platform_tiktok':
+        await query.answer()
+        context.user_data['platform'] = 'tiktok'
+        keyboard = [
+            [InlineKeyboardButton("🔍 Lookup User", callback_data='lookup'),
+             InlineKeyboardButton("📊 Batch Search", callback_data='batch')],
+            [InlineKeyboardButton("📋 View History", callback_data='history'),
+             InlineKeyboardButton("📥 Export Excel", callback_data='export')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🎵 *TikTok Mode Selected*\n\nChoose an action:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    
+    elif query.data == 'lookup':
         await query.answer()
         context.user_data['mode'] = 'lookup'
-        await query.edit_message_text("📱 Send me the Instagram username you want to lookup:")
+        platform = context.user_data.get('platform', 'instagram')
+        await query.edit_message_text(f"📱 Send me the {platform.capitalize()} username you want to lookup:")
     
     elif query.data == 'batch':
         await query.answer()
         context.user_data['mode'] = 'batch'
-        await query.edit_message_text("📱 Send me usernames separated by commas (e.g., user1, user2, user3):")
+        platform = context.user_data.get('platform', 'instagram')
+        await query.edit_message_text(f"📱 Send me {platform.capitalize()} usernames separated by commas (e.g., user1, user2, user3):")
     
     elif query.data == 'history':
         await query.answer()
@@ -345,11 +371,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         user_sessions[user_id] = {'searches': []}
     
     mode = context.user_data.get('mode', None)
+    platform = context.user_data.get('platform', 'instagram')
     
     if mode == 'lookup':
         # Single lookup
         if not valid_username(user_text):
-            await update.message.reply_text("❌ Invalid Instagram username. Use only letters, numbers, dots, and underscores.")
+            await update.message.reply_text("❌ Invalid username. Use only letters, numbers, dots, and underscores.")
             return
         
         if not can_search(context, cooldown=5):
@@ -358,20 +385,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         await update.message.chat.send_action(ChatAction.TYPING)
         
-        scraper = get_scraper(context)
-        info = scraper.get_user_info(user_text)
+        if platform == 'tiktok':
+            tiktok_scraper = TikTokScraper()
+            info = tiktok_scraper.get_user_info(user_text)
+        else:
+            scraper = get_scraper(context)
+            info = scraper.get_user_info(user_text)
         
-        if isinstance(info, dict):
+        if isinstance(info, dict) and "error" not in info:
             response = format_user_info(info)
             
-            # Add origin inference
-            origin = infer_account_origin(info)
-            origin_text = "\n".join(f"{h}" for h in origin["origin"])
-            response += f"\n🌍 *Estimated Origin:*\n{origin_text}\n_{origin['confidence']}_"
-            
-            # Add account age
-            age = estimate_account_age(info.get('posts_count', 0), info.get('followers', 0))
-            response += f"\n\n📅 *Account Age Estimate:* {age}"
+            if platform == 'instagram':
+                # Add origin inference for Instagram
+                origin = infer_account_origin(info)
+                origin_text = "\n".join(f"{h}" for h in origin["origin"])
+                response += f"\n🌍 *Estimated Origin:*\n{origin_text}\n_{origin['confidence']}_"
+                
+                # Add account age
+                age = estimate_account_age(info.get('posts_count', 0), info.get('followers', 0))
+                response += f"\n\n📅 *Account Age Estimate:* {age}"
             
             keyboard = [
                 [InlineKeyboardButton("🔍 Search Another", callback_data='lookup'),
@@ -382,7 +414,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             
             await update.message.reply_text(response, parse_mode='Markdown', reply_markup=reply_markup)
         else:
-            await update.message.reply_text(info)
+            error_msg = info.get("error", "❌ User not found.")
+            await update.message.reply_text(error_msg)
         
         context.user_data['mode'] = None
     
@@ -402,50 +435,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.chat.send_action(ChatAction.TYPING)
         await update.message.reply_text(f"🔍 Searching {len(usernames)} users...")
         
-        scraper = get_scraper(context)
+        if platform == 'tiktok':
+            tiktok_scraper = TikTokScraper()
+            # Async batch search
+            try:
+                tasks = [
+                    asyncio.to_thread(tiktok_scraper.get_user_info, u)
+                    for u in usernames
+                ]
+                results = await asyncio.gather(*tasks)
+                results = [r for r in results if isinstance(r, dict) and "error" not in r]
+            except TimeoutError:
+                await update.message.reply_text("⏱ Search timeout. TikTok took too long to respond.")
+                context.user_data['mode'] = None
+                return
+        else:
+            scraper = get_scraper(context)
+            try:
+                tasks = [
+                    asyncio.to_thread(scraper.get_user_info, u)
+                    for u in usernames
+                ]
+                results = await asyncio.gather(*tasks)
+                results = [r for r in results if isinstance(r, dict)]
+            except TimeoutError:
+                await update.message.reply_text("⏱ Search timeout. Instagram took too long to respond.")
+                context.user_data['mode'] = None
+                return
         
-        # Async batch search (faster)
-        try:
-            tasks = [
-                asyncio.to_thread(scraper.get_user_info, u)
-                for u in usernames
-            ]
-            results = await asyncio.gather(*tasks)
-            results = [r for r in results if isinstance(r, dict)]
-            
-            # Summary
-            summary = f"""
+        # Summary
+        summary = f"""
 ✅ *Batch Search Complete*
 
 📊 Results: {len(results)}/{len(usernames)} users found
 
 Users fetched:
-            """
-            
-            for result in results:
-                summary += f"\n• @{result['username']} ({result['full_name']}) - {result['followers']} followers"
-            
-            keyboard = [
-                [InlineKeyboardButton("📥 Export to Excel", callback_data='export'),
-                 InlineKeyboardButton("📋 View History", callback_data='history')]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await update.message.reply_text(summary, parse_mode='Markdown', reply_markup=reply_markup)
-        except TimeoutError:
-            await update.message.reply_text("⏱ Search timeout. Instagram took too long to respond.")
-        except ValueError:
-            await update.message.reply_text("❌ Invalid input in batch search.")
-        except Exception as e:
-            logger.exception("Batch search error")
-            await update.message.reply_text("❌ Batch search failed. Please try again.")
+        """
         
+        for result in results:
+            summary += f"\n• @{result.get('username', 'N/A')} ({result.get('full_name', 'N/A')}) - {result.get('followers', 0)} followers"
+        
+        keyboard = [
+            [InlineKeyboardButton("📥 Export to Excel", callback_data='export'),
+             InlineKeyboardButton("📋 View History", callback_data='history')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(summary, parse_mode='Markdown', reply_markup=reply_markup)
         context.user_data['mode'] = None
     
     else:
-        # Default: treat as single username lookup
+        # Default: ask for platform if not selected
+        if 'platform' not in context.user_data:
+            keyboard = [
+                [InlineKeyboardButton("📸 Instagram", callback_data='platform_instagram'),
+                 InlineKeyboardButton("🎵 TikTok", callback_data='platform_tiktok')],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Please select a platform first:", reply_markup=reply_markup)
+            return
+        
+        # Treat as username lookup
         if not valid_username(user_text):
-            await update.message.reply_text("❌ Invalid Instagram username. Use only letters, numbers, dots, and underscores.")
+            await update.message.reply_text("❌ Invalid username. Use only letters, numbers, dots, and underscores.")
             return
         
         if not can_search(context, cooldown=5):
@@ -454,20 +506,23 @@ Users fetched:
         
         await update.message.chat.send_action(ChatAction.TYPING)
         
-        scraper = get_scraper(context)
-        info = scraper.get_user_info(user_text)
+        if platform == 'tiktok':
+            tiktok_scraper = TikTokScraper()
+            info = tiktok_scraper.get_user_info(user_text)
+        else:
+            scraper = get_scraper(context)
+            info = scraper.get_user_info(user_text)
         
-        if isinstance(info, dict):
+        if isinstance(info, dict) and "error" not in info:
             response = format_user_info(info)
             
-            # Add origin inference
-            origin = infer_account_origin(info)
-            origin_text = "\n".join(f"{h}" for h in origin["origin"])
-            response += f"\n\n🌍 *Estimated Origin:*\n{origin_text}\n_{origin['confidence']}_"
-            
-            # Add account age
-            age = estimate_account_age(info.get('posts_count', 0), info.get('followers', 0))
-            response += f"\n\n📅 *Account Age Estimate:* {age}"
+            if platform == 'instagram':
+                origin = infer_account_origin(info)
+                origin_text = "\n".join(f"{h}" for h in origin["origin"])
+                response += f"\n\n🌍 *Estimated Origin:*\n{origin_text}\n_{origin['confidence']}_"
+                
+                age = estimate_account_age(info.get('posts_count', 0), info.get('followers', 0))
+                response += f"\n\n📅 *Account Age Estimate:* {age}"
             
             keyboard = [
                 [InlineKeyboardButton("🔍 Search Another", callback_data='lookup'),
@@ -477,7 +532,8 @@ Users fetched:
             
             await update.message.reply_text(response, parse_mode='Markdown', reply_markup=reply_markup)
         else:
-            await update.message.reply_text(info)
+            error_msg = info.get("error", "❌ User not found.")
+            await update.message.reply_text(error_msg)
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
