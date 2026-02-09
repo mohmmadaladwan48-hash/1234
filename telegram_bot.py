@@ -390,7 +390,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             info = tiktok_scraper.get_user_info(user_text)
         else:
             scraper = get_scraper(context)
-            info = scraper.get_user_info(user_text)
+            try:
+                # Use timeout for Instagram to prevent slowdown (max 10 seconds)
+                info = await asyncio.wait_for(
+                    asyncio.to_thread(scraper.get_user_info, user_text),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                info = {"error": "⏱️ Instagram lookup timed out (took too long). Try again later or use TikTok."}
         
         if isinstance(info, dict) and "error" not in info:
             response = format_user_info(info)
@@ -511,7 +518,14 @@ Users fetched:
             info = tiktok_scraper.get_user_info(user_text)
         else:
             scraper = get_scraper(context)
-            info = scraper.get_user_info(user_text)
+            try:
+                # Use timeout for Instagram to prevent slowdown (max 10 seconds)
+                info = await asyncio.wait_for(
+                    asyncio.to_thread(scraper.get_user_info, user_text),
+                    timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                info = {"error": "⏱️ Instagram lookup timed out (took too long). Try again later or use TikTok."}
         
         if isinstance(info, dict) and "error" not in info:
             response = format_user_info(info)
