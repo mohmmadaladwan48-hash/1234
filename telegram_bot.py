@@ -13,8 +13,8 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from telegram.constants import ChatAction
-from advanced_scraper import InstagramInfoScraper
-from tiktok_scraper import TikTokScraper
+from instagram_rapidapi import InstagramRapidAPIScraper as InstagramInfoScraper
+from tiktok_rapidapi import TikTokRapidAPIScraper as TikTokScraper
 
 # Enable logging
 logging.basicConfig(
